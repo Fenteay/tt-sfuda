@@ -25,6 +25,7 @@ import losses
 import archs
 
 cudnn.benchmark = True
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -156,12 +157,12 @@ def sfuda_target(config, train_loader, pseduo_model, msrc_model, criterion, opti
     for input, target, path in train_loader:
         aug_input = build_pseduo_augmentation(input.squeeze(0))
         with torch.no_grad():
-            aug_output = pseduo_model(aug_input.cuda())
+            aug_output = pseduo_model(aug_input.to(device))
             ps_output = uncert_voting(aug_output.detach())
 
         optimizer.zero_grad()
-        output = msrc_model(aug_input.cuda())
-        seg_loss = criterion(output.cuda(), ps_output.repeat(5,1,1,1).cuda())
+        output = msrc_model(aug_input.to(device))
+        seg_loss = criterion(output.to(device), ps_output.repeat(5,1,1,1).to(device))
         ent_loss = sigmoid_entropy_loss(torch.sigmoid(output))
         loss = seg_loss + ent_loss 
         loss.backward()
@@ -188,10 +189,10 @@ def sfuda_task(train_loader, msrc_model, tgt_model, criterion, optimizer):
     pbar = tqdm(total=len(train_loader))
 
     for input, target, _ in train_loader:
-        w_input = input.cuda()
-        target = target.cuda()
+        w_input = input.to(device)
+        target = target.to(device)
         image_strong_aug = build_strong_augmentation(input.squeeze(0))
-        s_input = image_strong_aug.unsqueeze(0).cuda()
+        s_input = image_strong_aug.unsqueeze(0).to(device)
 
         with torch.no_grad():
             w_output, msrc_feat = msrc_model(w_input, mode='const')
@@ -235,8 +236,8 @@ def validate(val_loader, model, criterion):
     with torch.no_grad():
         pbar = tqdm(total=len(val_loader))
         for input, target, meta in val_loader:
-            input = input.cuda()
-            target = target.cuda()
+            input = input.to(device)
+            target = target.to(device)
 
             output = model(input)
             loss = criterion(output, target)
@@ -265,10 +266,10 @@ def main():
     with open('models/%s/%s.yml' % (args.source, config_file), 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
-    train_img_ids = glob(os.path.join('inputs', args.target, 'train','images', '*' + config['img_ext']))
+    train_img_ids = glob(os.path.join('inputs', 'inputs', args.target, 'train','images', '*' + config['img_ext']))
     train_img_ids = [os.path.splitext(os.path.basename(p))[0] for p in train_img_ids]
 
-    val_img_ids = glob(os.path.join('inputs', args.target, 'test','images', '*' + config['img_ext']))
+    val_img_ids = glob(os.path.join('inputs', 'inputs', args.target, 'test','images', '*' + config['img_ext']))
     val_img_ids = [os.path.splitext(os.path.basename(p))[0] for p in val_img_ids]
 
     train_transform = Compose([
@@ -280,8 +281,8 @@ def main():
 
     train_dataset = Dataset(
         img_ids=train_img_ids,
-        img_dir=os.path.join('inputs', args.target, 'train','images'),
-        mask_dir=os.path.join('inputs', args.target, 'train','masks'),
+        img_dir=os.path.join('inputs', 'inputs', args.target, 'train','images'),
+        mask_dir=os.path.join('inputs', 'inputs', args.target, 'train','masks'),
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
@@ -301,8 +302,8 @@ def main():
 
     val_dataset = Dataset(
         img_ids=val_img_ids,
-        img_dir=os.path.join('inputs', args.target,'test', 'images'),
-        mask_dir=os.path.join('inputs', args.target,'test', 'masks'),
+        img_dir=os.path.join('inputs', 'inputs', args.target,'test', 'images'),
+        mask_dir=os.path.join('inputs', 'inputs', args.target,'test', 'masks'),
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
@@ -322,14 +323,14 @@ def main():
                                            config['deep_supervision'])
 
     msrc_model.load_state_dict(torch.load('models/%s/model.pth'%config['name']))
-    msrc_model.cuda()
+    msrc_model.to(device)
     msrc_model.train()
     print("Sucessfully loaded source trained model...!!!")
 
     tgt_model = archs.__dict__[config['arch']](config['num_classes'],
                                            config['input_channels'],
                                            config['deep_supervision'])
-    tgt_model.cuda()
+    tgt_model.to(device)
     tgt_model.train()
 
     src_params = filter(lambda p: p.requires_grad, msrc_model.parameters())
@@ -346,10 +347,10 @@ def main():
                                            config['deep_supervision'])
     pretrained_dict = msrc_model.state_dict()
     pseudo_model.load_state_dict(pretrained_dict)
-    pseudo_model.cuda()
+    pseudo_model.to(device)
     pseudo_model.eval()
 
-    criterion = losses.__dict__[config['loss']]().cuda()
+    criterion = losses.__dict__[config['loss']]().to(device)
     
     print("")
     print("Performing source only model evaluation...!!!")
@@ -365,7 +366,7 @@ def main():
     msrc_model.eval()
     pretrained_dict = msrc_model.state_dict()
     tgt_model.load_state_dict(pretrained_dict)
-    tgt_model.cuda()
+    tgt_model.to(device)
     tgt_model.train()
 
     print("")
