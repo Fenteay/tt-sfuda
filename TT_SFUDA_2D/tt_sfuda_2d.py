@@ -322,7 +322,7 @@ def main():
                                            config['input_channels'],
                                            config['deep_supervision'])
 
-    msrc_model.load_state_dict(torch.load('models/%s/model.pth'%config['name']))
+    msrc_model.load_state_dict(torch.load('models/%s/model.pth'%config['name'], map_location=device))
     msrc_model.to(device)
     msrc_model.train()
     print("Sucessfully loaded source trained model...!!!")
