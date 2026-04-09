@@ -1,82 +1,92 @@
 import os
+import yaml
 import torch
 import cv2
 import numpy as np
+from glob import glob
 from tqdm import tqdm
 
-# =========================================================================
-# 1. COPY CÁC IMPORT TỪ FILE tt_sfuda_2d.py VÀO ĐÂY
-# (Ví dụ: import các file cấu trúc mạng UNet, hàm load dataloader RITE...)
-# =========================================================================
-# from networks.unet import UNet  <-- Thay bằng import thực tế của bạn
-# from dataset.dataset import get_target_dataloader <-- Thay bằng import thực tế
-# =========================================================================
+from albumentations import Resize
+from albumentations.augmentations import transforms
+from albumentations.core.composition import Compose
+from torch.utils.data import DataLoader
+
+import archs
+# IMPORT TRỰC TIẾP LỚP DATASET TỪ CODE CỦA TÁC GIẢ
+from dataset import Dataset 
 
 def main():
     # --- CẤU HÌNH ---
-    # Thay đường dẫn này bằng đường dẫn tới file .pth bạn tìm được ở Bước 1
-    WEIGHTS_PATH = "checkpoints/target_model_rite.pth" 
-    OUTPUT_DIR = "results/rite_inference_masks"
+    TARGET = 'rite'
+    SOURCE = 'hrf_unet'
+    WEIGHTS_PATH = 'adapted_target_model_rite.pth'
+    CONFIG_PATH = f'models/{SOURCE}/config_{TARGET}.yml'
     
-    # Tạo thư mục lưu ảnh nếu chưa có
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-    print("1. Đang khởi tạo mô hình...")
-    # =========================================================================
-    # 2. KHỞI TẠO MODEL VÀ LOAD WEIGHTS
-    # (Copy cách khởi tạo mạng student từ file tt_sfuda_2d.py)
-    # =========================================================================
-    # student = UNet(in_channels=3, out_classes=1) <-- Thay bằng code thực tế
-    student = None # Xóa dòng này đi sau khi bạn copy code khởi tạo model vào
+    OUTPUT_MASK_DIR = 'batch_predictions'
+    os.makedirs(OUTPUT_MASK_DIR, exist_ok=True)
     
-    # Load trọng số đã train vào model
-    student.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
-    student.to(device)
-    student.eval() # Bắt buộc phải có để chuyển sang chế độ test
-    print("-> Load weights thành công!")
+    device = torch.device('cpu') # Tiếp tục chạy CPU cho an toàn
 
-    print("2. Đang chuẩn bị dữ liệu test...")
-    # =========================================================================
-    # 3. KHỞI TẠO DATALOADER CHO TẬP TEST (RITE)
-    # (Copy cách lấy target_test_loader từ file tt_sfuda_2d.py)
-    # =========================================================================
-    # target_test_loader = get_target_dataloader(dataset='rite', split='test') <-- Thay bằng code thực tế
-    target_test_loader = [] # Xóa dòng này đi sau khi copy code lấy dataloader vào
+    # 1. Load Cấu hình
+    with open(CONFIG_PATH, 'r') as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
 
-    print(f"3. Bắt đầu dự đoán và lưu ảnh vào thư mục: {OUTPUT_DIR}")
-    # Tắt tính toán gradient để tiết kiệm RAM và tăng tốc
+    # 2. Khởi tạo Mô hình
+    print("1. Đang load mô hình...")
+    model = archs.__dict__[config['arch']](config['num_classes'],
+                                           config['input_channels'],
+                                           config['deep_supervision'])
+    model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
+    model.to(device)
+    model.eval()
+
+    # 3. Sử dụng chính xác cấu trúc DataLoader của tác giả
+    print("2. Đang chuẩn bị DataLoader chuẩn của tác giả...")
+    val_img_ids = glob(os.path.join('inputs', 'inputs', TARGET, 'test', 'images', '*' + config['img_ext']))
+    val_img_ids = [os.path.splitext(os.path.basename(p))[0] for p in val_img_ids]
+
+    val_transform = Compose([
+        Resize(config['input_h'], config['input_w']),
+        transforms.Normalize(),
+    ])
+
+    val_dataset = Dataset(
+        img_ids=val_img_ids,
+        img_dir=os.path.join('inputs', 'inputs', TARGET, 'test', 'images'),
+        mask_dir=os.path.join('inputs', 'inputs', TARGET, 'test', 'masks'),
+        img_ext=config['img_ext'],
+        mask_ext=config['mask_ext'],
+        num_classes=config['num_classes'],
+        transform=val_transform)
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0, # Set 0 khi chạy CPU để tránh lỗi đa luồng
+        drop_last=False)
+
+    # 4. Bắt đầu dự đoán
+    print(f"3. Đang phân vùng {len(val_loader)} ảnh...\n")
     with torch.no_grad():
-        for i, batch in enumerate(tqdm(target_test_loader)):
-            # Lấy ảnh gốc (bạn check lại key 'image' hay 'img' trong batch nhé)
-            images = batch['image'].to(device) 
+        for i, (input_tensor, target, meta) in enumerate(tqdm(val_loader, desc="Tiến trình")):
+            input_tensor = input_tensor.to(device)
             
-            # Mô hình dự đoán
-            outputs = student(images)
-            
-            # Xử lý output thành mask nhị phân (0 hoặc 1)
-            pred_prob = torch.sigmoid(outputs)
+            # Dự đoán
+            output = model(input_tensor)
+            pred_prob = torch.sigmoid(output)
             pred_mask = (pred_prob > 0.5).float()
             
-            # Duyệt qua từng ảnh trong batch (nếu batch_size > 1)
-            for j in range(images.size(0)):
-                # Lấy tên ảnh để lưu (check lại key 'name' hay 'id' trong dataloader)
-                if 'name' in batch:
-                    img_name = batch['name'][j]
-                else:
-                    img_name = f"pred_img_{i}_{j}"
-                
-                save_name = f"{img_name}.png"
-                
-                # Chuyển tensor sang Numpy và scale lên 255 (ảnh trắng đen)
-                mask_np = pred_mask[j].squeeze().cpu().numpy()
-                final_mask = (mask_np * 255).astype(np.uint8)
-                
-                # Lưu ảnh bằng OpenCV
-                save_path = os.path.join(OUTPUT_DIR, save_name)
-                cv2.imwrite(save_path, final_mask)
-                
-    print("\nHoàn tất! Hãy mở thư mục kết quả để kiểm tra.")
+            # Chuyển thành ảnh
+            mask_np = pred_mask[0].squeeze().cpu().numpy()
+            final_mask = (mask_np * 255).astype(np.uint8)
+            
+            # Lưu ảnh
+            img_name = val_img_ids[i] + ".png"
+            save_path = os.path.join(OUTPUT_MASK_DIR, img_name)
+            cv2.imwrite(save_path, final_mask)
+            
+    print(f"\nHoàn tất! Hãy kiểm tra thư mục: {OUTPUT_MASK_DIR}")
 
 if __name__ == '__main__':
     main()

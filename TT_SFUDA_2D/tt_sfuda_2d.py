@@ -227,7 +227,7 @@ def sfuda_task(train_loader, msrc_model, tgt_model, criterion, optimizer):
                         ('iou', avg_meters['iou'].avg)])
 
 
-def validate(val_loader, model, criterion):
+def validate(val_loader, model, criterion, save_dir=None, img_ids=None):
     avg_meters = {'loss': AverageMeter(),
                   'iou': AverageMeter(),
                   'dice': AverageMeter()}
@@ -235,7 +235,8 @@ def validate(val_loader, model, criterion):
     model.eval()
     with torch.no_grad():
         pbar = tqdm(total=len(val_loader))
-        for input, target, meta in val_loader:
+        # Thêm biến i để duyệt qua index
+        for i, (input, target, meta) in enumerate(val_loader): 
             input = input.to(device)
             target = target.to(device)
 
@@ -246,6 +247,26 @@ def validate(val_loader, model, criterion):
             avg_meters['loss'].update(loss.item(), input.size(0))
             avg_meters['iou'].update(iou, input.size(0))
             avg_meters['dice'].update(dice, input.size(0))
+
+            # ========================================================
+            # ĐOẠN CODE LƯU ẢNH (CHỈ CHẠY NẾU CÓ TRUYỀN SAVE_DIR)
+            # ========================================================
+            if save_dir is not None:
+                import cv2
+                import numpy as np
+                # Chuyển output thành xác suất và tạo mask nhị phân
+                pred_prob = torch.sigmoid(output)
+                pred_mask = (pred_prob > 0.5).float()
+                
+                # Ép kiểu về Numpy array [0, 255]
+                mask_np = pred_mask[0].squeeze().cpu().numpy()
+                final_mask = (mask_np * 255).astype(np.uint8)
+
+                # Lấy tên file gốc hoặc dùng số thứ tự i
+                img_name = img_ids[i] if img_ids is not None else f"pred_{i}"
+                save_path = os.path.join(save_dir, f"{img_name}.png")
+                cv2.imwrite(save_path, final_mask)
+            # ========================================================
 
             postfix = OrderedDict([
                 ('loss', avg_meters['loss'].avg),
@@ -370,14 +391,25 @@ def main():
     tgt_model.train()
 
     print("")
-    print("Task specific adaptation...!!!")
-    for epoch in range(config['stage2']):
-        train_log = sfuda_task(train_loader, msrc_model, tgt_model, criterion, tgt_optimizer)
-        print('train_loss %.4f - train_iou %.4f'% (train_log['loss'], train_log['iou']))
-    
-    print("")
     print("Performing adapted target model evaluation...!!!")
-    val_log = validate(val_loader, tgt_model, criterion)
+    
+    # --- THÊM PHẦN LƯU MODEL VÀ ẢNH ---
+    # 1. Tạo thư mục lưu ảnh
+    output_img_dir = 'results_rite_masks'
+    os.makedirs(output_img_dir, exist_ok=True)
+    
+    # 2. Gọi hàm validate mới (có truyền thêm thư mục và tên ảnh)
+    val_log = validate(val_loader, tgt_model, criterion, save_dir=output_img_dir, img_ids=val_img_ids)
+    
+    # 3. LƯU LẠI TRỌNG SỐ MÔ HÌNH (.pth) ĐỂ SAU NÀY DÙNG LẠI
+    torch.save(tgt_model.state_dict(), 'adapted_target_model_rite.pth')
+    
+    print("\n-----------------------------------------------------------")
+    print(f" Đã xuất ảnh dự đoán ra thư mục: {output_img_dir}")
+    print(f" Đã lưu mô hình vào file: adapted_target_model_rite.pth")
+    print("-----------------------------------------------------------\n")
+    # -----------------------------------
+
     print('Adapted target model dice: %.4f' % (val_log['dice']))
 
 
