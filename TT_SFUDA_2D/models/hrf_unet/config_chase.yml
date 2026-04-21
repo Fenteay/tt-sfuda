@@ -1,0 +1,15 @@
+arch: UNet
+deep_supervision: false
+img_ext: .png
+input_channels: 3
+input_h: 512
+input_w: 512
+loss: BCEDiceLoss
+lr: 0.0001
+mask_ext: .png
+name: hrf_unet
+num_classes: 1
+num_workers: 4
+stage1: 15
+stage2: 15
+weight_decay: 0.0001
